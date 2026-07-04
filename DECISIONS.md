@@ -1,0 +1,118 @@
+# Decision Log
+
+Append-only. Newest at top. Each entry: date, decision, the alternatives, and the
+*why* — that "why" is what turns into article paragraphs. Keep it honest; record the
+ones that turned out wrong too.
+
+Template:
+
+```
+## YYYY-MM-DD — <short title>
+**Decision:** ...
+**Alternatives considered:** ...
+**Why:** ...
+**Revisit if:** ...
+```
+
+---
+
+## 2026-07-04 — Dataset confirmed: HN full API export; add `reply` framing mode
+**Decision:** Use the Kaggle "official HN API export" (~38M items: stories + comments +
+polls, one parquet, standard Firebase item schema). Keep HN over swapping datasets. Add a
+`--mode reply` to `prepare.py` alongside `--mode raw`.
+**Alternatives considered:** Switch to an instruction dataset (Tulu/OpenHermes) for a more
+"normal" SFT story; BigQuery HN export instead of Kaggle.
+**Why:** For an FSDP article the dataset is a vehicle — judge it by low pipeline friction +
+a crisp screenshottable result, both of which HN wins. The export being *full* (stories and
+comments in one file) means the steerable framing is a single self-join, not a second
+dataset: `reply` mode joins each comment to its immediate parent → "(context) — reply —
+(reply)" documents, so the model becomes promptable at inference (context + `REPLY_SEP`).
+Chose the immediate-parent join over walking to the root story title (recursive, fiddly);
+immediate parent is conversational and one join. `raw` mode stays the default/simplest.
+**Verified:** smoke-tested both modes on synthetic HN-schema data — dead/deleted dropped,
+HTML unescaped, story-parent uses `title`, comment-parent uses parent `text`.
+**Open:** confirm the Kaggle dataset's **license** before publishing generated samples or
+weights (HN content is user-generated; Kaggle re-host terms vary). BigQuery export is the
+cleaner-provenance fallback.
+**Revisit if:** reply-mode context bloats sequences (parent story bodies can be long) →
+cap parent context length or fall back to title-only context.
+
+## 2026-07-03 — Parked: GFusion / diffusion-LM conversion is phase 2, not this weekend
+**Decision:** Do NOT attempt an autoregressive→diffusion conversion (à la Sber's GFusion,
+open-sourced 2026-07-02) in this run. Log it as future work.
+**Alternatives considered:** Fold a diffusion-conversion experiment into the weekend run.
+**Why:** It's a different axis, not an upgrade. Phase 1 has one sharp thesis — full-param
+FSDP fine-tuning of an AR model too big for one GPU. Diffusion conversion changes the
+objective, sampling, and serving stack at once; it would split the article into two
+half-told stories and blow the 5–10 h budget. The reusable GFusion pieces each require a
+real training run, not a config change: (1) the AR→diffusion recipe (precedent: Dream /
+Dream-Coder from Qwen — possible, but their recipe is tuned to GigaChat's MoE arch +
+tokenizer, so porting to dense Qwen/Llama is real adaptation); (2) optimized attention
+kernels (+60% vs Flex-Attention — model-agnostic, but only pays off once you're already
+training a diffusion model); (3) the SGLang sampler (accelerates *diffusion* LLMs only —
+does nothing for a stock AR Qwen).
+**Bridge to phase 2:** The FSDP harness built here is exactly what a diffusion-conversion
+run would reuse (still sharding a 7–8B training job the same way). Phase 1 is the
+foundation for phase 2, not throwaway setup — a good closing hook for the article.
+**Note:** GFusion postdates this author's/assistant's knowledge cutoff; the above is from
+a secondhand summary, verify specifics before acting.
+**Revisit if:** doing a follow-up post on open-base diffusion LLMs.
+
+## 2026-07-03 — Framework: PyTorch, not TensorFlow
+**Decision:** PyTorch.
+**Alternatives considered:** TensorFlow (`tf.distribute`, DTensor).
+**Why:** FSDP is a PyTorch-native API (`torch.distributed.fsdp`, now FSDP2). TensorFlow
+has no FSDP equivalent, and the entire LLM fine-tuning ecosystem (HF, torchtune,
+Axolotl, DeepSpeed) is PyTorch. An FSDP article is a PyTorch article by definition.
+**Revisit if:** never, for this project.
+
+## 2026-07-03 — Trainer: torchtune `full_finetune_distributed`
+**Decision:** torchtune, FSDP2 recipe.
+**Alternatives considered:** HF Trainer + Accelerate FSDP; Axolotl; raw torch FSDP loop.
+**Why:** torchtune is PyTorch-native and its recipe/config exposes sharding strategy,
+auto-wrap, activation checkpointing, and checkpoint format directly — i.e. the config
+*is* the teaching material. Raw FSDP loop is more educational but more weekend-risk.
+**Revisit if:** torchtune's Qwen2.5 builders/checkpointer fight us → fall back to HF
+Accelerate FSDP (already noted as plan B in README).
+
+## 2026-07-03 — Model: Qwen2.5-7B (base)
+**Decision:** Qwen2.5-7B, the **base** (not -instruct) checkpoint.
+**Alternatives considered:** Llama 3.1 8B (gated HF access, canonical FSDP demo);
+Qwen3-8B (newer, less trodden); smaller 1–3B models.
+**Why:** Apache-2.0 → no gated-access wait on a weekend. 7B is the sweet spot: full FT
+overflows one GPU (forces FSDP) but still finishes in 5–10 h. Base model because raw HN
+comments = next-token continued pre-training, and base is the honest starting point.
+**Revisit if:** want a bigger "wow" or NVLink headroom → swap to Llama 3.1 8B (request
+gated access the day before).
+
+## 2026-07-03 — Full-parameter fine-tune, NOT LoRA/QLoRA
+**Decision:** Full-parameter fine-tune.
+**Alternatives considered:** LoRA, QLoRA.
+**Why:** This is the crux of the article. QLoRA of a 7B fits on one 24 GB 4090 — if we
+used it, the multi-GPU story collapses ("why 2 GPUs?"). Full FT needs ~16 bytes/param of
+state (~120 GB for 8B), which genuinely requires sharding. FSDP earns its keep only here.
+**Revisit if:** OOM even at 2×80 GB with offload → drop to LoRA and pivot the article to
+"FSDP + LoRA at larger scale", but that's a different piece.
+
+## 2026-07-03 — Hardware: 2× A100/H100 80 GB, single node, NVLink
+**Decision:** 2× 80 GB on one RunPod node, prefer NVLink/SXM.
+**Alternatives considered:** 2× 48 GB (A6000/A40) with CPU offload; multi-node.
+**Why:** 80 GB cards make full 7B FT comfortable without heavy offload. FSDP is
+communication-heavy (all-gather / reduce-scatter each layer) so interconnect matters;
+NVLink >> PCIe. Single node avoids multi-node NCCL setup pain on a weekend. ~$20–40 total.
+**Revisit if:** want to demonstrate scaling 2→4→8 GPUs for the article's throughput chart.
+
+## 2026-07-03 — Data: subsample to a fixed token budget, not a full epoch
+**Decision:** Subsample the 5.5 GB parquet to ~200M tokens (configurable) via `prepare.py`.
+**Alternatives considered:** Full epoch over all 5.5 GB.
+**Why:** At ~5–10k tokens/s aggregate, ~8 h buys ~150–300M tokens — far less than the full
+corpus. A fixed token budget makes the run bounded and reproducible. Sampling method and
+budget are themselves a logged decision.
+**Revisit if:** throughput is higher than expected → raise `--target-tokens`.
+
+## 2026-07-03 — Sequence packing at max_seq_len 4096
+**Decision:** Pack cleaned comments into 4096-token sequences (`packed: True`).
+**Alternatives considered:** No packing (pad to longest); shorter 2048 context.
+**Why:** HN comments are short; without packing most of each sequence is padding and GPUs
+waste FLOPs. Packing maximizes tokens/s. 4096 balances context vs activation memory.
+**Revisit if:** activation memory OOM → drop to 2048.

@@ -1,0 +1,11 @@
+# Installed on top of a RunPod PyTorch base image (torch + CUDA already present).
+# If torch is NOT present, install a CUDA build first from https://pytorch.org.
+torchtune>=0.4.0
+torchao>=0.7.0
+transformers>=4.44.0
+datasets>=2.20.0
+huggingface_hub>=0.24.0
+polars>=1.25.0     # engine="streaming" API
+pyarrow>=16.0.0
+safetensors>=0.4.0
+wandb>=0.17.0        # optional: live charts (swap DiskLogger -> WandBLogger in config)

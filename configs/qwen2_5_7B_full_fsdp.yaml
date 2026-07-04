@@ -1,0 +1,91 @@
+# torchtune full-parameter fine-tune of Qwen2.5-7B (base), FSDP2, 2+ GPUs.
+# Run with: tune run --nproc_per_node 2 full_finetune_distributed --config configs/qwen2_5_7B_full_fsdp.yaml
+#
+# NOTE: builder / component names evolve between torchtune versions. If `tune run`
+# complains about a missing component, run `tune ls` and check the qwen2_5 configs
+# (`tune cp qwen2_5/7B_full ./ref.yaml`) to grab the exact names for your install.
+
+output_dir: /workspace/output/qwen2_5_7B_hn
+
+# ---- Tokenizer -------------------------------------------------------------
+# max_seq_len MUST be set for packing to work.
+tokenizer:
+  _component_: torchtune.models.qwen2_5.qwen2_5_tokenizer
+  path: /workspace/models/Qwen2.5-7B/vocab.json
+  merges_file: /workspace/models/Qwen2.5-7B/merges.txt
+  max_seq_len: 4096
+
+# ---- Dataset: raw text continued pre-training, packed ----------------------
+# text_completion_dataset reads a single text column and does next-token prediction.
+# `source: parquet` + `data_files` uses HF datasets' parquet loader on our local file.
+dataset:
+  _component_: torchtune.datasets.text_completion_dataset
+  source: parquet
+  data_files: /workspace/data/hn_prepared.parquet
+  column: text
+  split: train
+  packed: True
+seed: 42
+shuffle: True
+
+# ---- Model -----------------------------------------------------------------
+# Base (not instruct). Confirm builder name with `tune ls` if this errors.
+model:
+  _component_: torchtune.models.qwen2_5.qwen2_5_7b_base
+
+# ---- Checkpointer ----------------------------------------------------------
+# Writes HF-format safetensors to output_dir/epoch_N so `transformers` can load it.
+# checkpoint_files must match what download_model.sh actually pulled (4 shards).
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: /workspace/models/Qwen2.5-7B
+  checkpoint_files: [
+    model-00001-of-00004.safetensors,
+    model-00002-of-00004.safetensors,
+    model-00003-of-00004.safetensors,
+    model-00004-of-00004.safetensors,
+  ]
+  recipe_checkpoint: null
+  output_dir: ${output_dir}
+  model_type: QWEN2
+resume_from_checkpoint: False
+
+# ---- Training loop ---------------------------------------------------------
+batch_size: 4                     # per-GPU micro-batch (of packed 4096-tok seqs)
+epochs: 1
+max_steps_per_epoch: null         # set e.g. 500 for a smoke test
+gradient_accumulation_steps: 8    # effective seqs/step = 4 * 8 * n_gpus
+clip_grad_norm: 1.0               # FSDP-aware clipping (do NOT hand-roll on sharded params)
+
+optimizer:
+  _component_: torch.optim.AdamW
+  lr: 1e-5                        # full-FT continued pre-training; conservative
+  weight_decay: 0.01
+  fused: True                     # if you see NaNs / a fused-kernel error, set False
+optimizer_in_bwd: False
+
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 100
+
+loss:
+  _component_: torchtune.modules.loss.CEWithChunkedOutputLoss
+
+# ---- FSDP / precision / memory --------------------------------------------
+device: cuda
+dtype: bf16                       # bf16 on A100/H100; avoid fp16 (loss scaling / divergence)
+enable_activation_checkpointing: True   # turn off only if you have memory to spare
+enable_activation_offloading: False     # last-resort memory saver (slower)
+compile: False                    # try True once it's training for a speedup
+
+# ---- Logging ---------------------------------------------------------------
+# Switch DiskLogger -> WandBLogger to get live charts (see setup_pod.sh for wandb).
+metric_logger:
+  _component_: torchtune.training.metric_logging.DiskLogger
+  log_dir: ${output_dir}/logs
+log_every_n_steps: 1
+log_peak_memory_stats: True       # <-- key for the memory before/after in the article
+
+profiler:
+  _component_: torchtune.training.setup_torch_profiler
+  enabled: False

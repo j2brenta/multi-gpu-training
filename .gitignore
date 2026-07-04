@@ -1,0 +1,23 @@
+# Weights, data, and run outputs — never commit these.
+/models/
+/output/
+/workspace/
+*.parquet
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+
+# wandb / logs
+wandb/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
