@@ -1,8 +1,15 @@
 # Installed on top of a RunPod PyTorch base image (torch + CUDA already present).
 # If torch is NOT present, install a CUDA build first from https://pytorch.org.
 # Install via uv:  uv pip install --system -r requirements.txt  (see scripts/setup_pod.sh)
-torchtune>=0.4.0
-torchao>=0.7.0
+#
+# torchtune/torchao do NOT pin torch — they use whatever torch the base image ships.
+# These are PINNED (not '>=') on purpose: an unpinned torchao floats to a build whose
+# import references `torch.int1` and requires torch >= 2.11, which crashes on the common
+# torch 2.4/2.5 base images ("module 'torch' has no attribute 'int1'"). 0.4.0/0.7.0 is
+# the validated combo for torch 2.5.1 (cu124) and has the qwen2_5_7b_base builder the
+# config uses. setup_pod.sh ensures torch >= 2.5 before installing these.
+torchtune==0.4.0
+torchao==0.7.0
 transformers>=4.44.0
 datasets>=2.20.0
 huggingface_hub>=0.24.0

@@ -51,3 +51,26 @@ Template for a hit:
 
 ## Hit
 <!-- move items here with a filled-in entry as they actually occur -->
+
+### Unpinned torchao pulled a torch>=2.11 build onto a torch 2.4.1 base  [HIT 2026-07-04]
+**Symptom:** `tune` won't even start:
+```
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to
+torch >= 2.11.0 (found 2.4.1+cu124).
+...
+File ".../torchao/quantization/quant_primitives.py", line 191, in <module>
+    torch.int1: (-(2**0), 2**0 - 1),
+AttributeError: module 'torch' has no attribute 'int1'
+```
+**Cause:** `torchtune`/`torchao` don't pin torch — they build against whatever the base
+image ships. `requirements.txt` had them as unpinned `>=`, so uv installed the *latest*
+`torchao` (0.17.0), whose module-load references `torch.int1` (a dtype only in very new
+torch) and demands torch >= 2.11. The RunPod base image had torch 2.4.1 → import crash.
+**Fix:** Pin the validated combo `torchtune==0.4.0` + `torchao==0.7.0` (has the config's
+`qwen2_5_7b_base` builder, neither touches `torch.int1`), and add a torch-version guard in
+`setup_pod.sh` that installs `torch==2.5.1+cu124` if the base image torch is < 2.5 (never
+downgrades a newer one). Re-run `bash scripts/setup_pod.sh`.
+**Article angle:** "torch + CUDA already present" base images are convenient but make you
+the version-solver: libraries that float their torch requirement will happily install a
+build the base image can't run. Pin the ML stack; treat the base image's torch as a fixed
+constraint you resolve *around*, not a suggestion.
