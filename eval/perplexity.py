@@ -34,6 +34,9 @@ def main() -> None:
                     help="HF checkpoint dir: base model or a fine-tuned epoch_N")
     ap.add_argument("--data", required=True,
                     help="Held-out parquet with a text column (NOT training data)")
+    ap.add_argument("--tokenizer-dir", default="/workspace/models/Qwen2.5-7B",
+                    help="Tokenizer source (base model — fine-tuning doesn't change it, and "
+                         "torchtune doesn't copy tokenizer files into the checkpoint dir).")
     ap.add_argument("--column", default="text", help="Text column name")
     ap.add_argument("--max-seq-len", type=int, default=4096,
                     help="Truncate each document to this many tokens")
@@ -49,9 +52,9 @@ def main() -> None:
     # Single GPU is plenty for eval (7B bf16 ~14 GB); avoid device_map so we don't
     # need `accelerate`. Falls back to CPU if no CUDA (slow, but runs anywhere).
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tok = AutoTokenizer.from_pretrained(args.model_dir)
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_dir)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_dir, torch_dtype=torch.bfloat16
+        args.model_dir, dtype=torch.bfloat16
     ).to(device)
     model.eval()
 

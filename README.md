@@ -39,8 +39,8 @@ bash scripts/download_model.sh       # pulls Qwen2.5-7B base into /workspace/mod
 #                        anchors each comment to the article it reacts to (topic + source)
 #    --holdout-frac 0.02 : split off 2% as disjoint held-out text for perplexity eval
 python data/prepare.py \
-    --input /workspace/data/hn_raw.parquet \
-    --output /workspace/data/hn_prepared.parquet \
+    --input data/hacker-news.parquet \
+    --output data/hn_prepared.parquet \
     --mode reply_root \
     --target-tokens 200_000_000 \
     --holdout-frac 0.02
@@ -51,13 +51,19 @@ bash scripts/baseline_oom_test.sh    # expected: CUDA OOM
 # 3. Now shard across 2 GPUs and actually train:
 bash scripts/launch_train.sh         # tune run --nproc_per_node 2 ...
 
-# 4. Sanity-check the fine-tuned model (add --reply-mode if you trained with --mode reply):
-python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0 --reply-mode
+# 4. Convert torchtune's checkpoint to a real HF dir (it writes hf_model_*.pt to the
+#    output ROOT — not HF-loadable, and no tokenizer; see CHALLENGES.md). One-time:
+python eval/to_hf.py --ckpt-dir /workspace/output/qwen2_5_7B_hn \
+    --base-dir /workspace/models/Qwen2.5-7B \
+    --out /workspace/output/qwen2_5_7B_hn/hf
 
-# 5. PROVE it beat base: held-out perplexity, base vs fine-tuned (lower = learned HN).
+# 5. Sanity-check the fine-tuned model (add --reply-mode if you trained with --mode reply):
+python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/hf --reply-mode
+
+# 6. PROVE it beat base: held-out perplexity, base vs fine-tuned (lower = learned HN).
 python eval/perplexity.py --model-dir /workspace/models/Qwen2.5-7B \
     --data /workspace/data/hn_prepared.holdout.parquet          # the "before"
-python eval/perplexity.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0 \
+python eval/perplexity.py --model-dir /workspace/output/qwen2_5_7B_hn/hf \
     --data /workspace/data/hn_prepared.holdout.parquet          # the "after" (lower)
 ```
 
@@ -83,6 +89,7 @@ scripts/setup_pod.sh                one-shot env install on the pod
 scripts/download_model.sh           fetch Qwen2.5-7B base weights
 scripts/baseline_oom_test.sh        single-rank run that should OOM (the "before")
 scripts/launch_train.sh             2-GPU FSDP training launch (the "after")
+eval/to_hf.py                       torchtune .pt dump -> loadable HF dir (safetensors+tok)
 eval/generate.py                    load fine-tuned HF checkpoint, generate samples
 eval/perplexity.py                  held-out perplexity, base vs fine-tuned (the proof)
 DECISIONS.md                        running decision log (pre-seeded)

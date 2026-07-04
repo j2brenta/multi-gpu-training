@@ -32,7 +32,14 @@ DEFAULT_REPLY_CONTEXTS = [
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model-dir", required=True, help="HF checkpoint dir (epoch_N)")
+    ap.add_argument("--model-dir", required=True,
+                    help="Dir with the fine-tuned weights + config.json. NOTE: torchtune "
+                         "0.4.0 writes these to the output_dir ROOT (hf_model_*.pt), not an "
+                         "epoch_N/ subfolder — point here at /workspace/output/qwen2_5_7B_hn")
+    ap.add_argument("--tokenizer-dir", default="/workspace/models/Qwen2.5-7B",
+                    help="Where to load the tokenizer. Fine-tuning doesn't change it, so the "
+                         "base model dir is always correct — and torchtune does NOT copy the "
+                         "tokenizer files into the checkpoint dir.")
     ap.add_argument("--max-new-tokens", type=int, default=120)
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--top-p", type=float, default=0.95)
@@ -49,15 +56,18 @@ def main() -> None:
     else:
         prompts = DEFAULT_PROMPTS
 
-    tok = AutoTokenizer.from_pretrained(args.model_dir)
+    # Tokenizer from the base model (torchtune doesn't copy it into the checkpoint);
+    # weights from the fine-tuned dir. Single-device load avoids needing `accelerate`.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tok = AutoTokenizer.from_pretrained(args.tokenizer_dir)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_dir, torch_dtype=torch.bfloat16, device_map="auto"
-    )
+        args.model_dir, dtype=torch.bfloat16
+    ).to(device)
     model.eval()
 
     for prompt in prompts:
         text_in = prompt + REPLY_SEP if args.reply_mode else prompt
-        inputs = tok(text_in, return_tensors="pt").to(model.device)
+        inputs = tok(text_in, return_tensors="pt").to(device)
         with torch.no_grad():
             out = model.generate(
                 **inputs,

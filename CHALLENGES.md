@@ -52,6 +52,31 @@ Template for a hit:
 ## Hit
 <!-- move items here with a filled-in entry as they actually occur -->
 
+### torchtune HF checkpoint isn't actually HF-loadable  [HIT 2026-07-04]
+**Symptom:** `eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0` →
+```
+OSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name':
+'/workspace/output/qwen2_5_7B_hn/epoch_0'. Use `repo_type` argument if needed.
+```
+**Cause:** Two things, both the classic FSDP-checkpoint footgun:
+1. **Wrong path.** torchtune 0.4.0's `FullModelHFCheckpointer` writes to the output_dir
+   ROOT, not an `epoch_N/` subfolder. The README assumed `epoch_0`; that dir doesn't
+   exist, so `from_pretrained` fell back to treating the path as a Hub repo id → the
+   confusing error above.
+2. **Not HF-loadable even at the right path.** The dir has `config.json` + `hf_model_
+   0001_0.pt ... 0004` (torchtune's own shard naming) but NO `model*.safetensors` /
+   `pytorch_model*.bin` + index, and NO tokenizer files. `transformers.from_pretrained`
+   can't auto-discover `hf_model_*.pt`, and the tokenizer is missing entirely.
+**Fix:** One-time conversion `eval/to_hf.py`: merge the `.pt` shards, load into an HF
+model built from the base config, `save_pretrained` as safetensors, and bundle the base
+tokenizer → a clean `.../hf` dir that loads directly. Also hardened `generate.py` /
+`perplexity.py` to load the tokenizer from the base model (`--tokenizer-dir`, default
+`/workspace/models/Qwen2.5-7B`) and drop `device_map="auto"` (no `accelerate` needed).
+**Article angle:** "torchtune wrote an HF checkpoint" is a half-truth — it's HF *format*
+(converted keys) but not an HF *directory* (wrong filenames, no index, no tokenizer). The
+save→load boundary is where FSDP recipes bite; always convert + reload before trusting a
+run. This is exactly the anticipated "FSDP checkpoint format" item, now confirmed.
+
 ### Unpinned torchao pulled a torch>=2.11 build onto a torch 2.4.1 base  [HIT 2026-07-04]
 **Symptom:** `tune` won't even start:
 ```
