@@ -16,6 +16,50 @@ Template:
 
 ---
 
+## 2026-07-04 — Verify "it worked" with held-out perplexity, not just vibes
+**Decision:** Make held-out **perplexity, base vs fine-tuned** the primary success metric.
+Add `--holdout-frac` to `prepare.py` (splits a disjoint sample off the already-shuffled,
+budget-trimmed docs into `<stem>.holdout.parquet`) and `eval/perplexity.py` (token-weighted
+corpus perplexity for any HF checkpoint on that file). `eval/generate.py` (side-by-side
+samples) stays as the qualitative/screenshot signal.
+**Alternatives considered:** Qualitative generation only; a downstream benchmark (MMLU etc.);
+train-loss curve as the headline number.
+**Why:** The objective *is* next-token prediction on HN, so perplexity on HN text the model
+never saw is the honest, directly-aligned measure — and it's cheap (forward passes only).
+Generation alone is unfalsifiable cherry-picking; train loss falling doesn't prove it beat
+base; a general benchmark measures the wrong thing (we didn't train for MMLU). Fairness holds
+because base and fine-tuned share the Qwen tokenizer (identical token counts). Held-out (not
+train) is essential — train-set perplexity is inflated by memorization. Same script on a
+non-HN parquet doubles as the catastrophic-forgetting guardrail: HN perplexity should drop
+while general-English perplexity stays ~flat; a spike there means lr/steps were too hot.
+**Verified:** `--holdout-frac 0.05` on the local sample produced a disjoint split (train
+3,154 / holdout 165, overlap 0); `perplexity.py` ran end-to-end under uv on a tiny model
+(token-weighted NLL→exp path confirmed). Real base-vs-finetuned numbers pending the pod run.
+**Revisit if:** perplexity drops but samples look worse (over-fit to formatting) → add a
+small held-out generation set scored by an LLM judge, or a cloze/idiom-completion probe.
+
+## 2026-07-04 — Add `reply_root`: anchor comments to the root story (topic + source)
+**Decision:** Add a third `prepare.py` mode, `reply_root`, alongside `raw`/`reply`. It
+climbs each comment's parent chain to the submitted **root story** and builds
+`"[Story] <title> (<domain>)" [+ "> <immediate parent comment>"] — reply — <comment>"`.
+The root walk is pointer-doubling over the item table (each pass doubles reachable
+depth, ~log2(depth) passes, early-stop at fixpoint), run eagerly on an (id, parent,
+type) projection. Parent context is length-capped (`--max-context-chars`, default 1000).
+**Alternatives considered:** Leave `reply` (immediate-parent-only) as the steerable mode;
+a recursive per-row walk; a second dataset for topic labels.
+**Why:** `reply` gives conversational context but a comment deep in a thread loses the
+*article it reacts to* — the topic and source that make it interpretable/promptable.
+`reply_root` restores that (prompt "here's an article about X → what would HN say?").
+This reverses the 2026-07-04 call to skip the root walk as "recursive, fiddly": pointer-
+doubling makes it a handful of set-based self-joins, not per-row recursion — cheap enough
+to justify the richer artifact. `raw`/`reply` are unchanged and remain the low-friction
+defaults; `reply_root` is opt-in.
+**Verified:** ran all three modes on a 200k-item local sample. `reply_root`: 6,635/6,644
+docs carry the `[Story]` anchor (broken/deleted chains fall back to parent-only context),
+3,640 also quote the immediate parent; direct-to-story replies show anchor only (no dup).
+**Revisit if:** root titles/domains add too little signal vs. the extra full-table walk on
+the 5.5 GB input (walk is eager — watch peak RAM on a laptop; fine on an 80 GB pod).
+
 ## 2026-07-04 — Dataset confirmed: HN full API export; add `reply` framing mode
 **Decision:** Use the Kaggle "official HN API export" (~38M items: stories + comments +
 polls, one parquet, standard Firebase item schema). Keep HN over swapping datasets. Add a

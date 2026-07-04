@@ -29,17 +29,21 @@ would make the multi-GPU setup pointless).
 
 ```bash
 # 0. Clone this repo onto the pod, then:
-bash scripts/setup_pod.sh            # installs torchtune, polars, etc.
+bash scripts/setup_pod.sh            # installs uv, then torchtune, polars, etc.
 bash scripts/download_model.sh       # pulls Qwen2.5-7B base into /workspace/models
 
 # 1. Prepare data (put the HN full-export parquet at /workspace/data/hn_raw.parquet first)
-#    --mode raw   : one comment per document (simplest continued pre-training)
-#    --mode reply : (parent context -> reply) pairs, so the model is promptable
+#    --mode raw        : one comment per document (simplest continued pre-training)
+#    --mode reply      : (immediate parent -> reply) pairs, so the model is promptable
+#    --mode reply_root : (root story "[Story] title (domain)" + parent -> reply) —
+#                        anchors each comment to the article it reacts to (topic + source)
+#    --holdout-frac 0.02 : split off 2% as disjoint held-out text for perplexity eval
 python data/prepare.py \
     --input /workspace/data/hn_raw.parquet \
     --output /workspace/data/hn_prepared.parquet \
-    --mode reply \
-    --target-tokens 200_000_000
+    --mode reply_root \
+    --target-tokens 200_000_000 \
+    --holdout-frac 0.02
 
 # 2. (Article narrative) Show it OOMs on ONE GPU — same config, 1 rank, no sharding:
 bash scripts/baseline_oom_test.sh    # expected: CUDA OOM
@@ -49,10 +53,19 @@ bash scripts/launch_train.sh         # tune run --nproc_per_node 2 ...
 
 # 4. Sanity-check the fine-tuned model (add --reply-mode if you trained with --mode reply):
 python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0 --reply-mode
+
+# 5. PROVE it beat base: held-out perplexity, base vs fine-tuned (lower = learned HN).
+python eval/perplexity.py --model-dir /workspace/models/Qwen2.5-7B \
+    --data /workspace/data/hn_prepared.holdout.parquet          # the "before"
+python eval/perplexity.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0 \
+    --data /workspace/data/hn_prepared.holdout.parquet          # the "after" (lower)
 ```
 
 The **step 2 → step 3 before/after** (OOM on one card, works when sharded) is the
-single most convincing beat for the article — run it and screenshot both.
+single most convincing beat for the article — run it and screenshot both. **Step 5**
+is the quantitative payoff: same held-out HN text, fine-tuned perplexity clearly below
+base. (Point `--data` at a non-HN parquet to check the fine-tune didn't *forget* general
+English — that perplexity should stay roughly flat, not spike.)
 
 ## Cost / time budget
 
@@ -71,6 +84,7 @@ scripts/download_model.sh           fetch Qwen2.5-7B base weights
 scripts/baseline_oom_test.sh        single-rank run that should OOM (the "before")
 scripts/launch_train.sh             2-GPU FSDP training launch (the "after")
 eval/generate.py                    load fine-tuned HF checkpoint, generate samples
+eval/perplexity.py                  held-out perplexity, base vs fine-tuned (the proof)
 DECISIONS.md                        running decision log (pre-seeded)
 CHALLENGES.md                       running challenge/gotcha log (pre-seeded)
 ```

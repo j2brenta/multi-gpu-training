@@ -1,5 +1,6 @@
 # Installed on top of a RunPod PyTorch base image (torch + CUDA already present).
 # If torch is NOT present, install a CUDA build first from https://pytorch.org.
+# Install via uv:  uv pip install --system -r requirements.txt  (see scripts/setup_pod.sh)
 torchtune>=0.4.0
 torchao>=0.7.0
 transformers>=4.44.0
