@@ -57,8 +57,10 @@ python eval/to_hf.py --ckpt-dir /workspace/output/qwen2_5_7B_hn \
     --base-dir /workspace/models/Qwen2.5-7B \
     --out /workspace/output/qwen2_5_7B_hn/hf
 
-# 5. Sanity-check the fine-tuned model (add --reply-mode if you trained with --mode reply):
-python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/hf --reply-mode
+# 5. Before/after samples: same prompts through base vs fine-tuned, side by side
+#    (drop --base-dir for fine-tuned only; add --reply-mode if trained with --mode reply):
+python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/hf --reply-mode \
+    --base-dir /workspace/models/Qwen2.5-7B
 
 # 6. PROVE it beat base: held-out perplexity, base vs fine-tuned (lower = learned HN).
 python eval/perplexity.py --model-dir /workspace/models/Qwen2.5-7B \

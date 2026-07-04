@@ -3,7 +3,10 @@
 generate a few completions. Look for HN-flavoured tone/vocabulary vs the base model.
 
 Usage:
-    python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0
+    python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/hf --reply-mode
+    # before/after: same prompts through base and fine-tuned, side by side
+    python eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/hf --reply-mode \
+        --base-dir /workspace/models/Qwen2.5-7B
 """
 import argparse
 
@@ -40,9 +43,18 @@ def main() -> None:
                     help="Where to load the tokenizer. Fine-tuning doesn't change it, so the "
                          "base model dir is always correct — and torchtune does NOT copy the "
                          "tokenizer files into the checkpoint dir.")
+    ap.add_argument("--base-dir", default=None,
+                    help="Also load this base model and print base vs fine-tuned side by "
+                         "side for each prompt (the article's before/after shot).")
     ap.add_argument("--max-new-tokens", type=int, default=120)
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument("--repetition-penalty", type=float, default=1.2,
+                    help="1.0 = off; >1 discourages verbatim repetition (curbs the loops "
+                         "an undertrained model falls into). 1.2 is a mild default.")
+    ap.add_argument("--no-repeat-ngram-size", type=int, default=3,
+                    help="Block repeating any n-gram of this size (0 = off). Kills the "
+                         "'the tests you need to write to test your code' loop.")
     ap.add_argument("--reply-mode", action="store_true",
                     help="Model trained with --mode reply: append REPLY_SEP to each prompt")
     ap.add_argument("--prompts", nargs="*", default=None,
@@ -60,13 +72,19 @@ def main() -> None:
     # weights from the fine-tuned dir. Single-device load avoids needing `accelerate`.
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tok = AutoTokenizer.from_pretrained(args.tokenizer_dir)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_dir, dtype=torch.bfloat16
-    ).to(device)
-    model.eval()
 
-    for prompt in prompts:
-        text_in = prompt + REPLY_SEP if args.reply_mode else prompt
+    # Load the fine-tuned model, and the base model too when --base-dir is given so each
+    # prompt prints base vs fine-tuned side by side. (Both fit on one 80 GB card.)
+    specs = ([("BASE", args.base_dir)] if args.base_dir else []) + \
+            [("FINE-TUNED", args.model_dir)]
+    models = []
+    for label, path in specs:
+        print(f"[generate] loading {label}: {path}")
+        m = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16).to(device)
+        m.eval()
+        models.append((label, m))
+
+    def generate(model, text_in: str) -> str:
         inputs = tok(text_in, return_tensors="pt").to(device)
         with torch.no_grad():
             out = model.generate(
@@ -75,12 +93,21 @@ def main() -> None:
                 do_sample=True,
                 temperature=args.temperature,
                 top_p=args.top_p,
+                repetition_penalty=args.repetition_penalty,
+                no_repeat_ngram_size=args.no_repeat_ngram_size,
                 pad_token_id=tok.eos_token_id,
             )
-        text = tok.decode(out[0], skip_special_tokens=True)
-        print("=" * 80)
-        print(text)
-    print("=" * 80)
+        return tok.decode(out[0], skip_special_tokens=True)
+
+    for prompt in prompts:
+        text_in = prompt + REPLY_SEP if args.reply_mode else prompt
+        print("#" * 80)
+        print(f"PROMPT: {prompt}")
+        for label, model in models:
+            print("-" * 80)
+            print(f"[{label}]")
+            print(generate(model, text_in))
+    print("#" * 80)
 
 
 if __name__ == "__main__":
