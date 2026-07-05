@@ -24,11 +24,15 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=500, help="How many paragraphs to keep")
     ap.add_argument("--min-chars", type=int, default=200,
                     help="Skip short/blank lines and section headers")
+    # Newer datasets/huggingface_hub reject the bare canonical id "wikitext" (needs
+    # namespace/name); the dataset now lives at Salesforce/wikitext (parquet, no script).
+    ap.add_argument("--dataset", default="Salesforce/wikitext")
+    ap.add_argument("--config", default="wikitext-2-raw-v1")
     args = ap.parse_args()
 
     # wikitext-2-raw: tiny (~4 MB), ungated, one line per row with many blanks and
     # '= Heading =' rows. Keep only real prose paragraphs so perplexity is meaningful.
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    ds = load_dataset(args.dataset, args.config, split="test")
     texts = [t.strip() for t in ds["text"]]
     texts = [t for t in texts if len(t) >= args.min_chars and not t.startswith("=")]
     texts = texts[: args.n]
