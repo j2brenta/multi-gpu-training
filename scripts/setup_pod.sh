@@ -41,4 +41,22 @@ uv pip install --system -r requirements.txt
 echo "[setup] mkdir workspace dirs..."
 mkdir -p /workspace/models /workspace/data /workspace/output
 
+# GPU-visibility gate. A RunPod network volume carries /workspace but NOT the Python
+# env, so every new pod must re-run this script — and a pod can come up with a driver
+# mismatch, no GPU attached, or CUDA_VISIBLE_DEVICES clobbered. Fail LOUDLY here with the
+# actual numbers instead of deep inside torchtune ("cuda:0 is not available"). If this
+# fires: check `nvidia-smi`, `echo $CUDA_VISIBLE_DEVICES` (empty-string hides all GPUs),
+# and that torch's cuda build matches the driver.
+echo "[setup] verifying torch can see the GPU(s)..."
+python - <<'PY'
+import sys, torch
+avail, n = torch.cuda.is_available(), torch.cuda.device_count()
+print(f"[setup]   torch {torch.__version__} | cuda {torch.version.cuda} | "
+      f"available={avail} | device_count={n}")
+if not avail or n == 0:
+    sys.exit("[setup] FATAL: torch cannot see a GPU. nvidia-smi should list the cards; "
+             "if it does, suspect a CPU-only torch, a driver older than the cuda build, "
+             "or CUDA_VISIBLE_DEVICES set to an empty string.")
+PY
+
 echo "[setup] done. Next: bash scripts/download_model.sh"

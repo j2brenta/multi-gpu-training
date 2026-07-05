@@ -52,6 +52,31 @@ Template for a hit:
 ## Hit
 <!-- move items here with a filled-in entry as they actually occur -->
 
+### Reusing a network volume on a new pod: env is gone, "cuda:0 is not available"  [HIT 2026-07-05]
+**Symptom:** Swapped to a fresh GPU pod backed by the same RunPod network volume, launched
+training, and:
+```
+RuntimeError: The device cuda:0 is not available on this machine.
+  ... torchtune/utils/_device.py, _validate_device_from_env(device)
+```
+even though `nvidia-smi` clearly showed 2× A100-SXM4-80GB attached and idle.
+**Cause:** A RunPod **network volume only persists `/workspace`** — model weights, data, and
+output checkpoints survived, but the Python environment did NOT. Everything installed with
+`uv pip install --system` lives in the container image at `/usr/local/lib/python3.11/dist-
+packages`, which is ephemeral and reset per pod. So the new pod was running the base image's
+default (wrong/old) torch, which couldn't bind the GPU. After re-running `setup_pod.sh`,
+`python -c "import torch; ...` reported `avail True | count 2` and training launched.
+**Fix:** Re-run `bash scripts/setup_pod.sh` on **every** new pod, even when the volume is
+reused. Added a GPU-visibility gate at the end of setup that asserts
+`torch.cuda.is_available()` and `device_count() > 0`, so a bad env/pod fails loudly at setup
+with the actual numbers instead of deep inside torchtune. Red herring along the way:
+`echo $CUDA_VISIBLE_DEVICES` printed `[]` — that's an *unset* var (harmless); an empty-string
+value would hide all GPUs, but torch reporting `count 2` proved it was unset.
+**Article angle:** "The volume persisted, so my setup persisted" is the trap. Persistent
+storage ≠ persistent environment — `/workspace` is durable, the container's site-packages are
+cattle. Treat `setup_pod.sh` as mandatory per-pod, and gate on GPU visibility so the failure
+is one clear line at setup, not a cryptic device error mid-recipe.
+
 ### torchtune HF checkpoint isn't actually HF-loadable  [HIT 2026-07-04]
 **Symptom:** `eval/generate.py --model-dir /workspace/output/qwen2_5_7B_hn/epoch_0` →
 ```
