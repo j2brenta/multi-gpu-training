@@ -16,6 +16,35 @@ Template:
 
 ---
 
+## 2026-07-05 — RESULT: fine-tune beat base, held-out perplexity 22.2 → 13.9 (−37%), no overfit
+**Outcome:** First full run complete. Full-parameter continued pre-training of Qwen2.5-7B
+(base) on HN `reply_root` data, FSDP2 via torchtune, 2× A100-SXM 80 GB in a **US** data
+center (after EU-IS-1's slow storage forced a move — see CHALLENGES).
+**Run:** 760 optimizer steps ≈ **199M tokens** (batch 4 × grad_accum 8 × 2 GPUs × 4096
+seq); **~7 h** wall; **~7.9k tok/s** aggregate (**~50% MFU**); **~$21** (7 h × $2.98/hr).
+`compile=False` (FSDP2 is fine — the earlier "compile hang" was slow-DC I/O, not compile).
+Packing the oversized 6.35M-doc parquet cost ~45 min one-time; token budget enforced with
+`max_steps_per_epoch=760` rather than re-preparing.
+**The money number** — held-out perplexity (`eval/perplexity.py` on
+`hn_prepared.holdout.parquet`; **167,446 tokens / 1,000 docs, identical for both**, shared
+Qwen tokenizer → apples-to-apples):
+
+| Model | Perplexity | Mean loss |
+|-------|-----------|-----------|
+| Base Qwen2.5-7B | 22.155 | 3.0981 |
+| Fine-tuned      | **13.882** | **2.6306** |
+
+→ **37% lower perplexity** on unseen HN text.
+**No overfitting:** fine-tuned held-out loss (2.6306) ≈ final training loss (~2.616) — they
+match, so it's generalization, not memorization (memorized weights would show held-out ≫
+train).
+**Still to confirm:** catastrophic-forgetting guardrail — general-English (wikitext)
+perplexity should stay ~flat base vs fine-tuned (`eval/make_general_holdout.py` +
+`perplexity.py`). Plus qualitative before/after via `generate.py --base-dir`.
+**Why it matters:** This is the quantitative half of the thesis payoff (the other half:
+OOM on 1 GPU vs works when sharded). A full-parameter FSDP fine-tune of a model too big for
+one card produced a real, measurable, non-overfit domain gain.
+
 ## 2026-07-04 — Verify "it worked" with held-out perplexity, not just vibes
 **Decision:** Make held-out **perplexity, base vs fine-tuned** the primary success metric.
 Add `--holdout-frac` to `prepare.py` (splits a disjoint sample off the already-shuffled,

@@ -52,6 +52,63 @@ Template for a hit:
 ## Hit
 <!-- move items here with a filled-in entry as they actually occur -->
 
+### One slow data center masqueraded as TWO different bugs (co-location was NOT the issue)  [HIT 2026-07-05]
+**Symptom:** On EU pods the run was (a) painfully slow to load the checkpoint —
+`folio_wait_bit_common` in D-state, `read_bytes: 0` (mmap page-ins don't count there),
+GPU memory crawling up — and (b) `torch.compile` appeared to *hang*: dozens of
+`torch/_inductor/compile_worker` processes parked in `futex_`/`pipe_r`, recipe ranks in
+`Dsl`, CPU ~94% idle, load average ~16 and climbing. The same code on a **US pod** was fast
+AND `torch.compile` completed normally.
+**Cause:** One root cause — slow network-volume storage — wearing two masks. It was NOT a
+region-mismatch: the EU volume was **co-located with the GPU (both in EU-IS-1 / Iceland)**.
+That data center's network-volume storage was simply slow. The slow mmap-backed reads
+throttled the 15 GB checkpoint load, AND they starved Inductor, whose compile workers
+read/write compilation artifacts to disk — so `torch.compile` stalled on I/O and looked
+like a compile/FSDP2 deadlock. It wasn't: the same pod stack on fast US storage compiled
+fine. Co-location is necessary but NOT sufficient — the DC's storage has to be fast.
+**Fix:** Network-volume throughput varies a LOT by RunPod data center (EU-IS-1 was slow;
+US was fast). **Benchmark storage before committing a multi-hour run** — e.g. time a cold
+read of the model dir (`time cat /workspace/models/Qwen2.5-7B/*.safetensors > /dev/null`)
+or a `dd` write test. If it's slow, pick a different DC, or stage model + data on the
+pod's LOCAL NVMe and write outputs locally (`checkpointer.checkpoint_dir=/root/...
+dataset.data_files=/root/... output_dir=/root/...`), copying the final checkpoint back.
+**Article angle:** Two "bugs" — a slow load and a `torch.compile` hang — collapsed into one
+infra fact: the volume was slow. Co-locating compute and storage isn't enough; some data
+centers' network volumes are just slow, and that starves both the checkpoint load and
+compile's on-disk artifact I/O. Diagnostic signature of storage-bound (not a framework
+bug): idle CPU + high load average + D-state workers + `folio_wait`/`read_bytes: 0`.
+Benchmark volume throughput first. And `torch.compile` + FSDP2 is fine — the "compile
+deadlock" hypothesis was wrong; it was I/O all along.
+
+### GPU wedged: "device(s) is/are busy or unavailable" with a clean nvidia-smi  [HIT 2026-07-05]
+**Symptom:** After fixing the env (torch saw both cards), `tune run` still died at rank 0.
+The elastic wrapper hides the real error — the actual worker traceback is ABOVE the
+`closing signal SIGTERM` lines (or `grep` the tee'd log). It was:
+```
+torch.empty(0, device=device)
+RuntimeError: CUDA error: CUDA-capable device(s) is/are busy or unavailable
+```
+`torch.cuda.is_available()` returned True and `device_count()==2`, but a bare
+`torch.empty(1, device='cuda:0')` failed on BOTH cards — while `nvidia-smi` showed them
+idle (0 MiB, no processes, Default compute mode).
+**Cause:** The device was wedged at the driver/host level (CUDA error 46,
+`cudaErrorDevicesUnavailable`), most likely from repeated ungraceful NCCL exits — every
+failed launch logged "process group has NOT been destroyed." Key insight:
+`is_available()`/`device_count()` only *enumerate* devices; they don't create a context,
+so they pass while the first real allocation fails.
+**Fix:** Not clearable from inside the container (no `nvidia-smi --gpu-reset` privilege).
+`pkill` + `fuser -k /dev/nvidia*` did NOT help — nothing was holding the cards. **Restart
+the pod** (`/workspace` persists) → re-run `setup_pod.sh` → gate on a bare allocation
+before launching. If a freshly restarted pod fails the bare-alloc test with nothing else
+running, it's a **bad host GPU** — reprovision (likely a different host).
+**Isolating diagnostic:** `python -c "import torch; torch.empty(1, device='cuda:0'); \
+torch.empty(1, device='cuda:1'); print('OK')"` — a bare context/alloc, no torchtune.
+Passing = env/process issue; failing with a clean `nvidia-smi` = wedged host, restart.
+**Article angle:** `torch.cuda.is_available()==True` is necessary but NOT sufficient — it
+enumerates, it doesn't allocate. The real liveness check is a zero-size allocation.
+"Kill the process" only helps if a process is holding it; a driver-level wedge needs a
+pod restart — and stop hammering the launcher, since each ungraceful exit deepens the hole.
+
 ### Reusing a network volume on a new pod: env is gone, "cuda:0 is not available"  [HIT 2026-07-05]
 **Symptom:** Swapped to a fresh GPU pod backed by the same RunPod network volume, launched
 training, and:
@@ -65,7 +122,9 @@ output checkpoints survived, but the Python environment did NOT. Everything inst
 `uv pip install --system` lives in the container image at `/usr/local/lib/python3.11/dist-
 packages`, which is ephemeral and reset per pod. So the new pod was running the base image's
 default (wrong/old) torch, which couldn't bind the GPU. After re-running `setup_pod.sh`,
-`python -c "import torch; ...` reported `avail True | count 2` and training launched.
+`python -c "import torch; ...` reported `avail True | count 2` — torch could see the cards
+again (a *separate* device-wedge then surfaced; see the entry above, which needed a pod
+restart, not an env fix).
 **Fix:** Re-run `bash scripts/setup_pod.sh` on **every** new pod, even when the volume is
 reused. Added a GPU-visibility gate at the end of setup that asserts
 `torch.cuda.is_available()` and `device_count() > 0`, so a bad env/pod fails loudly at setup

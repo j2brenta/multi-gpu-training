@@ -94,6 +94,7 @@ scripts/launch_train.sh             2-GPU FSDP training launch (the "after")
 eval/to_hf.py                       torchtune .pt dump -> loadable HF dir (safetensors+tok)
 eval/generate.py                    load fine-tuned HF checkpoint, generate samples
 eval/perplexity.py                  held-out perplexity, base vs fine-tuned (the proof)
+eval/make_general_holdout.py        wikitext parquet for the forgetting guardrail
 DECISIONS.md                        running decision log (pre-seeded)
 CHALLENGES.md                       running challenge/gotcha log (pre-seeded)
 ```
