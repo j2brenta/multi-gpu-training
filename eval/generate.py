@@ -36,9 +36,10 @@ DEFAULT_REPLY_CONTEXTS = [
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model-dir", required=True,
-                    help="Dir with the fine-tuned weights + config.json. NOTE: torchtune "
-                         "0.4.0 writes these to the output_dir ROOT (hf_model_*.pt), not an "
-                         "epoch_N/ subfolder — point here at /workspace/output/qwen2_5_7B_hn")
+                    help="HF model dir produced by eval/to_hf.py (e.g. .../qwen2_5_7B_hn/hf). "
+                         "Do NOT point at torchtune's raw output root: it writes hf_model_*.pt "
+                         "(not model*.safetensors) with no tokenizer, which from_pretrained "
+                         "can't load — run to_hf.py first.")
     ap.add_argument("--tokenizer-dir", default="/workspace/models/Qwen2.5-7B",
                     help="Where to load the tokenizer. Fine-tuning doesn't change it, so the "
                          "base model dir is always correct — and torchtune does NOT copy the "

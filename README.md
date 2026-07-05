@@ -32,15 +32,17 @@ would make the multi-GPU setup pointless).
 bash scripts/setup_pod.sh            # installs uv, then torchtune, polars, etc.
 bash scripts/download_model.sh       # pulls Qwen2.5-7B base into /workspace/models
 
-# 1. Prepare data (put the HN full-export parquet at /workspace/data/hn_raw.parquet first)
+# 1. Prepare data (put the HN full-export parquet at /workspace/data/hacker-news.parquet).
+#    Output path must match the config's dataset.data_files (/workspace/data/hn_prepared*).
 #    --mode raw        : one comment per document (simplest continued pre-training)
 #    --mode reply      : (immediate parent -> reply) pairs, so the model is promptable
 #    --mode reply_root : (root story "[Story] title (domain)" + parent -> reply) —
 #                        anchors each comment to the article it reacts to (topic + source)
 #    --holdout-frac 0.02 : split off 2% as disjoint held-out text for perplexity eval
+#                          (written to /workspace/data/hn_prepared.holdout.parquet)
 python data/prepare.py \
-    --input data/hacker-news.parquet \
-    --output data/hn_prepared.parquet \
+    --input /workspace/data/hacker-news.parquet \
+    --output /workspace/data/hn_prepared.parquet \
     --mode reply_root \
     --target-tokens 200_000_000 \
     --holdout-frac 0.02

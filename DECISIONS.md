@@ -38,9 +38,12 @@ Qwen tokenizer → apples-to-apples):
 **No overfitting:** fine-tuned held-out loss (2.6306) ≈ final training loss (~2.616) — they
 match, so it's generalization, not memorization (memorized weights would show held-out ≫
 train).
-**Still to confirm:** catastrophic-forgetting guardrail — general-English (wikitext)
-perplexity should stay ~flat base vs fine-tuned (`eval/make_general_holdout.py` +
-`perplexity.py`). Plus qualitative before/after via `generate.py --base-dir`.
+**Forgetting guardrail PASSED:** general-English perplexity (`make_general_holdout.py`,
+wikitext-2, 83,803 tokens / 500 docs, identical for both) was base **9.764** → fine-tuned
+**9.720** — flat (marginally lower, within noise). So HN −37% with **zero** general-ability
+loss: it learned the domain without forgetting. All three failure modes checked and passed
+(domain gain / no overfit / no forgetting).
+**Still to do:** qualitative before/after screenshots via `generate.py --base-dir`.
 **Why it matters:** This is the quantitative half of the thesis payoff (the other half:
 OOM on 1 GPU vs works when sharded). A full-parameter FSDP fine-tune of a model too big for
 one card produced a real, measurable, non-overfit domain gain.

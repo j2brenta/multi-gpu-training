@@ -34,7 +34,9 @@ model:
   _component_: torchtune.models.qwen2_5.qwen2_5_7b_base
 
 # ---- Checkpointer ----------------------------------------------------------
-# Writes HF-format safetensors to output_dir/epoch_N so `transformers` can load it.
+# Writes converted weights as hf_model_*.pt to the output_dir ROOT (torchtune 0.4.0 — NOT
+# an epoch_N/ subfolder, and NOT directly transformers-loadable). Run eval/to_hf.py to get
+# a real HF dir (safetensors + tokenizer). See CHALLENGES.md.
 # checkpoint_files must match what download_model.sh actually pulled (4 shards).
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
