@@ -110,23 +110,3 @@ CHALLENGES.md                       running challenge/gotcha log (pre-seeded)
 torchtune is the primary path here because its recipe/config *is* the teaching
 material for an FSDP article: the sharding, wrapping, and checkpointing are all
 visible and editable.
-
-## Future work (phase 2)
-
-**Autoregressive → diffusion-LM conversion** (à la Sber's GFusion, open-sourced
-2026-07-02) is explicitly **out of scope for this weekend** and parked as a follow-up.
-It's a different axis, not an upgrade: it changes the training objective, sampling, and
-serving stack all at once, and each reusable piece needs a real training run — not a
-config change:
-
-- **The AR→diffusion recipe** — possible on an open base (precedent: Dream / Dream-Coder
-  initialized from Qwen), but GFusion's recipe is tuned to GigaChat's MoE architecture and
-  tokenizer, so porting to dense Qwen/Llama is genuine adaptation.
-- **Optimized attention kernels** (+60% vs Flex-Attention) — the one model-agnostic piece,
-  but only pays off once you're already training a text-diffusion model.
-- **The SGLang sampling algorithm** — accelerates *diffusion* LLMs only; does nothing for a
-  stock autoregressive Qwen/Llama.
-
-The bridge worth noting: the FSDP harness in this repo is exactly what such a run would
-reuse (you still shard a 7–8B training job the same way). Phase 1 is the foundation for
-phase 2, not throwaway setup. See `DECISIONS.md` for the full reasoning.

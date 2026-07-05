@@ -18,36 +18,64 @@ Template for a hit:
 
 ## Anticipated (checklist)
 
-- [ ] **Single-GPU OOM baseline** — confirm full 7B FT OOMs on 1×80 GB (the "before" shot).
-      Capture the exact `torch.cuda.OutOfMemoryError` and the reserved/allocated numbers.
-- [ ] **FSDP checkpoint format** — `FULL_STATE_DICT` (rank-0 + CPU offload, gathers whole
-      model → slow, big RAM spike) vs `SHARDED_STATE_DICT` (fast, but needs re-consolidation
-      for inference). torchtune's `FullModelHFCheckpointer` writes HF format — confirm the
-      final `epoch_N/` folder loads in `transformers`. #1 classic footgun.
-- [ ] **Auto-wrap policy** — must wrap the *transformer decoder layer*, not the whole model.
-      Wrong policy = one giant shard = no memory win = still OOMs. Verify per-GPU memory drops
-      ~2× vs single-rank.
-- [ ] **Activation checkpointing on/off** — off may OOM at seq 4096; on costs ~20–30% speed.
-      Log peak memory with `log_peak_memory_stats: True` both ways.
-- [ ] **bf16 vs fp16** — use bf16 on A100/H100; fp16 needs loss scaling and can diverge.
-- [ ] **Gradient clipping under FSDP** — must use FSDP-aware clip (torchtune handles via
-      `clip_grad_norm`); naive `clip_grad_norm_` on sharded params is wrong.
-- [ ] **Data loader starving GPUs** — if GPU util sawtooths, tokenization/IO is the bottleneck.
-      Pre-clean in `prepare.py`; watch first-epoch packing cost.
-- [ ] **NCCL / torchrun init** — `RANK`/`WORLD_SIZE`/`MASTER_ADDR` env, NCCL timeouts, and
-      whether the pod actually has NVLink (`nvidia-smi topo -m`) vs PCIe.
-- [ ] **FSDP1 vs FSDP2** — torchtune uses FSDP2 (per-parameter sharding). Note any API/behaviour
-      differences if cross-referencing older Llama-recipes tutorials.
-- [ ] **Resume from checkpoint** — `resume_from_checkpoint: True` with a mid-run recipe state;
-      test that it actually restores optimizer state, not just weights.
-- [ ] **Throughput / MFU** — record tokens/s and (optionally) MFU; needed for any 2→N scaling
-      chart. Note comms overhead as world size grows.
-- [ ] **Tokenizer / packing correctness** — spot-check that packed sequences have correct EOS
-      boundaries and no cross-document attention leakage assumptions break the loss.
-- [ ] **`checkpoint_files` mismatch** — the safetensors shard list in the config must match what
-      actually downloaded (4 shards for Qwen2.5-7B). Wrong list → silent partial load / crash.
-- [ ] **`fused=True` AdamW** — fused optimizer + FSDP can interact badly on some torch versions;
-      fall back to non-fused if you see NaNs or a fused-kernel error.
+> **RETRO 2026-07-05:** After a full successful run, the verdict is clear — **FSDP itself
+> was the easy part.** Nearly every anticipated FSDP challenge was handled cleanly by the
+> torchtune FSDP2 recipe (✅ below). The only anticipated item that actually bit was the
+> checkpoint *format* — and even that as a loadability/tooling problem, not sharding. All
+> the real pain lived in **infrastructure** (see the Hit section: dependency pinning,
+> ephemeral env, wedged GPU, slow data-center storage). ✅ = went smoothly · ⚠️ = hit,
+> see Hit section · ⏳ = still pending.
+
+- [x] ⚠️ **Single-GPU "OOM" baseline — thesis DISPROVEN: it FIT on 1× A100 80 GB.** The
+      punchline flipped. Two captures:
+      1. **20 GB RTX 4000 Ada (2026-07-04):** OOM'd as expected — `torch.OutOfMemoryError:
+         Tried to allocate 2.03 GiB. GPU 0 total 19.67 GiB, 1.36 GiB free, 18.31 GiB in use`,
+         inside FSDP `all_gather_copy_in` at the first step. But "20 GB is too small" is
+         unsurprising, so this was never the real baseline.
+      2. **1× A100 80 GB (2026-07-05):** re-captured on the actual training card — and it
+         **did NOT OOM.** `world_size=1` FULL_SHARD (= no sharding, whole model on one card):
+         model init 17.80 GiB, optimizer + loss initialized, ran both steps (loss 2.97),
+         checkpoint saved successfully. `nvidia-smi` peaked at **80,691 MiB / 81,920 MiB =
+         98.5% full** — it fit with ~1.2 GB to spare (activation checkpointing ON, bf16).
+      **So the back-of-envelope "~120 GB, won't fit on 80 GB" is wrong in practice:** with
+      activation checkpointing + pure-bf16 the real footprint lands at ~80.7 GB, right at the
+      ceiling. torchtune even hinted at the headroom: *"enable_activation_offloading isn't
+      [on]. Enabling activation offloading should reduce memory further."*
+      **Article angle (stronger than the OOM would've been):** the case for FSDP here is NOT
+      "it doesn't fit" — it's "it fits so tightly you can't *train* on it." At 98.5% util,
+      activation checkpointing is mandatory (not a choice), the batch can't grow, and the run
+      survives only because it's 2 steps long. Sharded across 2 cards the same state is
+      ~10 GiB each → checkpointing becomes optional, batch can grow, GPUs do real work. FSDP
+      crosses from "fits, barely, uselessly" to "fits with room to actually work," not from
+      "OOM" to "fits." `baseline_oom_test.sh` is misnamed for the 80 GB case — it completes.
+- [x] ⚠️ **FSDP checkpoint format** — HIT, but not as a sharding problem: torchtune's
+      `FullModelHFCheckpointer` writes `hf_model_*.pt` to the output ROOT (not `epoch_N/`,
+      not HF-loadable, no tokenizer). Fixed with `eval/to_hf.py`. See the Hit entry. The
+      "#1 classic footgun" prediction was right — just for a different reason (format/
+      loadability, not `FULL_` vs `SHARDED_STATE_DICT`).
+- [x] ✅ **Auto-wrap policy** — SMOOTH. torchtune wrapped decoder layers correctly; per-GPU
+      memory was ~9–10 GiB (vs 17.8 GiB single-rank) → sharding confirmed working.
+- [x] ✅ **Activation checkpointing** — SMOOTH. Default on, no OOM at seq 4096. (The only
+      wobble was *suggesting* `=False` for speed, which risked OOM and wasn't needed.)
+- [x] ✅ **bf16 vs fp16** — SMOOTH. bf16, no divergence.
+- [x] ✅ **Gradient clipping under FSDP** — SMOOTH. `clip_grad_norm` handled it.
+- [x] ✅ **Data loader starving GPUs** — SMOOTH during training (~50% MFU, no sawtooth). The
+      slow I/O was one-time packing (~45 min) + the slow-DC storage stall, not train-time
+      dataloader starvation.
+- [x] ✅ **NCCL / torchrun init** — SMOOTH. Both ranks synced and sharded the model over the
+      node's GPU interconnect. (The "process group NOT destroyed" warnings were symptoms of
+      the wedged-GPU crashes, not an NCCL config problem — see Hit section.) NOTE: don't
+      assume NVLink from "SXM" — verify with `nvidia-smi topo -m` (NV# = NVLink; PIX/PHB/SYS
+      = PCIe/host bridge). SXM is a form factor; NVLink is a separate interconnect.
+- [x] ✅ **FSDP1 vs FSDP2** — SMOOTH. FSDP2 per-parameter sharding, no API surprises.
+- [ ] ⏳ **Resume from checkpoint** — PENDING/untested (optional; single-epoch run didn't
+      need it).
+- [x] ✅ **Throughput / MFU** — MEASURED: ~7.9k tok/s aggregate, ~50% MFU on 2× A100
+      (recorded in DECISIONS.md). Healthy, not a fight.
+- [x] ✅ **Tokenizer / packing correctness** — SMOOTH. Loss trended sanely (2.88→2.62) and
+      generations are coherent on-format HN replies → no packing/boundary bug.
+- [x] ✅ **`checkpoint_files` mismatch** — SMOOTH. The 4-shard list matched the download.
+- [x] ✅ **`fused=True` AdamW** — SMOOTH. No NaNs / fused-kernel errors.
 
 ## Hit
 <!-- move items here with a filled-in entry as they actually occur -->

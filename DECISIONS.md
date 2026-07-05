@@ -16,12 +16,40 @@ Template:
 
 ---
 
+## 2026-07-05 — RESULT: the "won't fit on one 80 GB GPU" thesis is WRONG — it fit (98.5%)
+**Outcome:** Ran the single-rank baseline (`baseline_oom_test.sh`: same config, `--nproc_per_node
+1`, `world_size=1` FULL_SHARD = no sharding, whole model on one card) on the actual **1× A100
+80 GB** — expecting the "before" OOM shot. It **did not OOM.** Model init 17.80 GiB, optimizer +
+loss initialized, both steps completed (loss 2.97), checkpoint saved. `nvidia-smi` peaked at
+**80,691 MiB / 81,920 MiB = 98.5% full** — fit with ~1.2 GB to spare (activation checkpointing
+ON, bf16). Earlier 20 GB RTX 4000 Ada *did* OOM, but "20 GB is too small" was never the real test.
+**Decision:** Reframe the article's central claim from *"full 7B FT doesn't fit on one 80 GB
+card"* to *"it fits so tightly you can't train on it."* The back-of-envelope 16 bytes/param ≈
+120 GB is the *unoptimized* number; with activation checkpointing + pure-bf16 the real footprint
+lands at ~80.7 GB, right at the ceiling.
+**Alternatives considered:** (1) Force the OOM by raising `batch_size` on one card until it dies —
+rejected as manufacturing a result. (2) Keep the "doesn't fit / OOMs" claim — rejected: `nvidia-smi`
+proves the opposite; a sharp reader would catch it. (3) Use bigger model / less activation
+checkpointing to make it OOM — rejected: changes the run the rest of the article describes.
+**Why:** The honest result is the *stronger* story. At 98.5% util a single card can't actually
+train: activation checkpointing is mandatory (not a speed/memory choice), the batch can't grow,
+and the 2-step probe survives only because it's 2 steps. Sharding across 2 cards drops each to
+~10 GiB → checkpointing becomes optional, the batch can grow, and the GPUs do real work at ~50%
+MFU. So FSDP earns its keep by crossing from *"fits, barely, uselessly"* to *"fits with room to
+work,"* not from *"OOM"* to *"fits."* This is the "naive expectation → surprising reality → why
+it still isn't enough → real payoff" shape.
+**Revisit if:** a future model/precision genuinely OOMs one 80 GB card (e.g. no activation
+checkpointing, or a larger base) → then the original "doesn't fit" framing becomes literally true.
+Also: `baseline_oom_test.sh` is now misnamed for the 80 GB case (it completes) — rename or
+re-purpose as a "single-card memory ceiling" probe.
+
 ## 2026-07-05 — RESULT: fine-tune beat base, held-out perplexity 22.2 → 13.9 (−37%), no overfit
 **Outcome:** First full run complete. Full-parameter continued pre-training of Qwen2.5-7B
 (base) on HN `reply_root` data, FSDP2 via torchtune, 2× A100-SXM 80 GB in a **US** data
 center (after EU-IS-1's slow storage forced a move — see CHALLENGES).
 **Run:** 760 optimizer steps ≈ **199M tokens** (batch 4 × grad_accum 8 × 2 GPUs × 4096
 seq); **~7 h** wall; **~7.9k tok/s** aggregate (**~50% MFU**); **~$21** (7 h × $2.98/hr).
+Interconnect **verified NVLink** (GPU0↔GPU1 = NV12, ~600 GB/s) via `nvidia-smi topo -m`.
 `compile=False` (FSDP2 is fine — the earlier "compile hang" was slow-DC I/O, not compile).
 Packing the oversized 6.35M-doc parquet cost ~45 min one-time; token budget enforced with
 `max_steps_per_epoch=760` rather than re-preparing.
@@ -176,6 +204,11 @@ state (~120 GB for 8B), which genuinely requires sharding. FSDP earns its keep o
 **Why:** 80 GB cards make full 7B FT comfortable without heavy offload. FSDP is
 communication-heavy (all-gather / reduce-scatter each layer) so interconnect matters;
 NVLink >> PCIe. Single node avoids multi-node NCCL setup pain on a weekend. ~$20–40 total.
+**SXM ≠ NVLink (precision):** SXM is a *form factor* (vs PCIe); NVLink is a *separate*
+GPU-to-GPU interconnect. Don't infer NVLink from "SXM" — verify with `nvidia-smi topo -m`.
+**Verified (the run):** 2× A100-SXM4-80GB, GPU0↔GPU1 = **NV12** (all 12 A100 third-gen
+NVLinks bonded, ~600 GB/s aggregate) on an HGX A100 node — so the "NVLink >> PCIe" bet held,
+and the ~50% MFU / ~7.9k tok/s throughput ran over full-bandwidth NVLink (not PCIe).
 **Revisit if:** want to demonstrate scaling 2→4→8 GPUs for the article's throughput chart.
 
 ## 2026-07-03 — Data: subsample to a fixed token budget, not a full epoch
